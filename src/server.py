@@ -1,0 +1,213 @@
+import subprocess
+import json
+import re
+import os
+import shutil
+from pathlib import Path
+from typing import List, Optional
+from fastmcp import FastMCP
+from dotenv import load_dotenv
+
+# Load .env file automatically
+load_dotenv()
+
+mcp = FastMCP("audio-analysis")
+
+
+def get_ffmpeg_bin() -> tuple:
+    """Get path to ffmpeg and ffprobe binaries.
+    Returns tuple of (ffmpeg_path, ffprobe_path).
+    Checks FFMPEG_PATH env var first, then falls back to system PATH.
+    """
+    custom_path = os.environ.get("FFMPEG_PATH")
+    if custom_path:
+        # Clean up path - remove quotes and handle Windows path escaping
+        custom_path = custom_path.strip().strip('"\'')
+        # Handle case where \f, \b etc were interpreted as escape sequences
+        # Check if path looks corrupted (has weird chars) and try to fix
+        if '\x0c' in custom_path or '\x08' in custom_path:
+            # Re-encode to get original backslashes back
+            custom_path = custom_path.encode('utf-8').decode('unicode_escape')
+        ffmpeg_exe = Path(custom_path) / ("ffmpeg.exe" if os.name == "nt" else "ffmpeg")
+        ffprobe_exe = Path(custom_path) / ("ffprobe.exe" if os.name == "nt" else "ffprobe")
+        if ffmpeg_exe.exists():
+            return (str(ffmpeg_exe), str(ffprobe_exe) if ffprobe_exe.exists() else None)
+    
+    return ("ffmpeg", "ffprobe")
+    
+    return ("ffmpeg", "ffprobe")
+
+
+def check_ffmpeg_available() -> bool:
+    ffmpeg_cmd, ffprobe_cmd = get_ffmpeg_bin()
+    return shutil.which(ffmpeg_cmd) is not None if ffmpeg_cmd else False
+
+
+def run_ffmpeg_command(args: List[str]) -> str:
+    ffmpeg_cmd, ffprobe_cmd = get_ffmpeg_bin()
+    
+    # Use local binary if available, otherwise check system
+    if ffmpeg_cmd != "ffmpeg":
+        # Custom path - use directly (already validated to exist)
+        cmd = [ffmpeg_cmd, "-hide_banner", "-y"] + args
+    else:
+        # System path
+        resolved = shutil.which("ffmpeg")
+        if not resolved:
+            raise RuntimeError("ffmpeg not found. Install from ffmpeg.org or set FFMPEG_PATH in .env")
+        cmd = [resolved, "-hide_banner", "-y"] + args
+    
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg failed: {result.stderr}")
+    return result.stderr
+
+
+def run_ffprobe_command(args: List[str]) -> dict:
+    ffmpeg_cmd, ffprobe_cmd = get_ffmpeg_bin()
+    
+    if ffprobe_cmd and ffprobe_cmd != "ffprobe" and Path(ffprobe_cmd).exists():
+        # Custom path
+        cmd = [ffprobe_cmd, "-v", "quiet", "-print_format", "json"] + args
+    elif ffprobe_cmd == "ffprobe":
+        # System path
+        resolved = shutil.which("ffprobe")
+        if not resolved:
+            raise RuntimeError("ffprobe not found. Install from ffmpeg.org or set FFMPEG_PATH in .env")
+        cmd = [resolved, "-v", "quiet", "-print_format", "json"] + args
+    else:
+        raise RuntimeError("ffprobe not found. Install from ffmpeg.org or set FFMPEG_PATH in .env")
+    
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    if result.returncode != 0:
+        raise RuntimeError(f"ffprobe failed: {result.stderr}")
+    return json.loads(result.stdout)
+
+
+@mcp.tool()
+def inspect_metadata(file_path: str) -> dict:
+    if not check_ffmpeg_available():
+        raise RuntimeError("ffmpeg/ffprobe not found. Please install ffmpeg and ensure it's in your PATH. See README.md for installation instructions.")
+    
+    args = [
+        "-show_format",
+        "-show_streams",
+        "-select_streams", "a:0",
+        file_path
+    ]
+    data = run_ffprobe_command(args)
+    
+    format_info = data.get("format", {})
+    stream = data["streams"][0] if data.get("streams") else {}
+    
+    return {
+        "file_name": format_info.get("filename", "").split("/")[-1].split("\\")[-1],
+        "duration_seconds": float(format_info.get("duration", 0)),
+        "sample_rate": int(stream.get("sample_rate", 0)),
+        "bit_rate": int(format_info.get("bit_rate", 0)) if format_info.get("bit_rate") else None,
+        "channels": int(stream.get("channels", 1))
+    }
+
+
+@mcp.tool()
+def detect_silence(file_path: str, noise_threshold_db: float = -50.0, min_duration: float = 0.5) -> List[dict]:
+    if not check_ffmpeg_available():
+        raise RuntimeError("ffmpeg/ffprobe not found. Please install ffmpeg and ensure it's in your PATH.")
+    
+    args = [
+        "-i", file_path,
+        "-af", f"silencedetect=noise={noise_threshold_db}dB:d={min_duration}",
+        "-f", "null", "-",
+    ]
+    
+    output = run_ffmpeg_command(args)
+    
+    # Parse silence segments - format is multi-line entries
+    start_pattern = r"silence_start: ([0-9.]+)"
+    end_pattern = r"silence_end: ([0-9.]+) \| silence_duration: ([0-9.]+)"
+    
+    starts = re.findall(start_pattern, output)
+    ends = re.findall(end_pattern, output)
+    
+    segments = []
+    for i, start in enumerate(starts):
+        if i < len(ends):
+            end, duration = ends[i]
+            segments.append({
+                "start_time": float(start),
+                "end_time": float(end),
+                "duration": float(duration)
+            })
+    
+    return segments
+
+
+@mcp.tool()
+def analyze_amplitude_stats(file_path: str) -> dict:
+    if not check_ffmpeg_available():
+        raise RuntimeError("ffmpeg/ffprobe not found. Please install ffmpeg and ensure it's in your PATH.")
+    
+    args = [
+        "-i", file_path,
+        "-af", "astats=measure_perchannel=all",
+        "-f", "null", "-",
+    ]
+    
+    output = run_ffmpeg_command(args)
+    
+    # ffmpeg astats output format uses spaces, not underscores
+    peak_match = re.search(r"Peak level dB: ([\-]?[0-9.]+)", output)
+    flat_match = re.search(r"Flat factor: ([0-9.]+)", output)
+    rms_match = re.search(r"RMS level dB: ([\-]?[0-9.]+)", output)
+    dc_match = re.search(r"DC offset: ([\-]?[0-9.]+)", output)
+    
+    return {
+        "peak_level_db": float(peak_match.group(1)) if peak_match else None,
+        "flat_factor": float(flat_match.group(1)) if flat_match else 0.0,
+        "rms_level_db": float(rms_match.group(1)) if rms_match else -20.0,
+        "dc_offset_db": float(dc_match.group(1)) if dc_match else 0.0
+    }
+
+
+@mcp.tool()
+def detect_clipping(file_path: str, threshold_db: float = 0.1) -> List[dict]:
+    """Detect potential clipping.
+    
+    Clips are detected when peak level is near 0dBFS AND flat_factor > 0
+    (indicating samples at maximum value).
+    """
+    if not check_ffmpeg_available():
+        raise RuntimeError("ffmpeg/ffprobe not found. Please install ffmpeg and ensure it's in your PATH.")
+    
+    args = [
+        "-i", file_path,
+        "-af", f"astats=measure_perchannel=all",
+        "-f", "null", "-",
+    ]
+    
+    output = run_ffmpeg_command(args)
+    
+    # Peak near 0dBFS indicates potential clipping
+    peak_match = re.search(r"Peak level dB: ([\-]?[0-9.]+)", output)
+    flat_match = re.search(r"Flat factor: ([0-9.]+)", output)
+    
+    segments = []
+    if peak_match:
+        peak_db = float(peak_match.group(1))
+        # Check if peak is near 0dB (within threshold)
+        if abs(peak_db) <= threshold_db:
+            flat_factor = float(flat_match.group(1)) if flat_match else 0.0
+            # Only flag as clipping if flat_factor indicates samples at ceiling
+            if flat_factor > 0:
+                segments.append({
+                    "start_time": 0.0,
+                    "end_time": 0.0,
+                    "peak_dB": peak_db,
+                    "confidence": "high" if flat_factor > 0.1 else "potential"
+                })
+    
+    return segments
+
+
+if __name__ == "__main__":
+    mcp.run()
