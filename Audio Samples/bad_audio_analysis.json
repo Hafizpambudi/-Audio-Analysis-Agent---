@@ -1,0 +1,148 @@
+{
+  "file_name": "bad_audio.mp3",
+  "duration_seconds": 121.107625,
+  "metadata": {
+    "file_name": "bad_audio.mp3",
+    "duration_seconds": 121.107625,
+    "sample_rate": 16000,
+    "bit_rate": 47235,
+    "channels": 1
+  },
+  "amplitude_stats": {
+    "peak_level_db": -0.392138,
+    "flat_factor": 0.0,
+    "rms_level_db": -16.605717,
+    "dc_offset_db": -2.1e-05
+  },
+  "silence_segments": [
+    {
+      "start_time": 4.168,
+      "end_time": 5.324813,
+      "duration": 1.156813
+    },
+    {
+      "start_time": 25.228875,
+      "end_time": 26.024625,
+      "duration": 0.79575
+    },
+    {
+      "start_time": 29.253688,
+      "end_time": 30.181875,
+      "duration": 0.928188
+    },
+    {
+      "start_time": 32.975563,
+      "end_time": 39.423437,
+      "duration": 6.447875
+    },
+    {
+      "start_time": 40.241375,
+      "end_time": 43.194875,
+      "duration": 2.9535
+    },
+    {
+      "start_time": 44.83825,
+      "end_time": 46.833312,
+      "duration": 1.995062
+    },
+    {
+      "start_time": 47.859875,
+      "end_time": 49.210563,
+      "duration": 1.350688
+    },
+    {
+      "start_time": 51.581563,
+      "end_time": 53.014187,
+      "duration": 1.432625
+    },
+    {
+      "start_time": 55.06375,
+      "end_time": 57.860062,
+      "duration": 2.796312
+    },
+    {
+      "start_time": 58.70625,
+      "end_time": 60.255625,
+      "duration": 1.549375
+    },
+    {
+      "start_time": 63.534562,
+      "end_time": 64.7135,
+      "duration": 1.178937
+    },
+    {
+      "start_time": 95.30775,
+      "end_time": 96.169625,
+      "duration": 0.861875
+    },
+    {
+      "start_time": 100.812562,
+      "end_time": 101.370438,
+      "duration": 0.557875
+    },
+    {
+      "start_time": 104.0505,
+      "end_time": 104.654125,
+      "duration": 0.603625
+    },
+    {
+      "start_time": 108.616813,
+      "end_time": 109.594313,
+      "duration": 0.9775
+    },
+    {
+      "start_time": 112.766375,
+      "end_time": 113.591938,
+      "duration": 0.825562
+    },
+    {
+      "start_time": 119.316,
+      "end_time": 119.8795,
+      "duration": 0.5635
+    }
+  ],
+  "audio_quality": {
+    "silence_ratio": 0.22273628105579646,
+    "clipping_detected": false,
+    "clipping_segments": [],
+    "avg_volume_db": -16.605717,
+    "noise_floor_db": null,
+    "dc_offset_db": -2.1e-05
+  },
+  "issues": [
+    {
+      "issue_type": "long_silence",
+      "description": "Long silence detected between 33.0s and 39.4s",
+      "start_time": 32.975563,
+      "end_time": 39.423437,
+      "severity": "medium"
+    }
+  ],
+  "executive_summary": {
+    "overall_quality": "moderate",
+    "asr_viability": "low to medium",
+    "summary": "The recording is 2\u202fmin long, mono at 16\u202fkHz with a low average RMS level of -16.6\u202fdB and no clipping. About 22\u202f% of the file consists of silence, including a 6.4\u2011second gap that interrupts the testimony. The low signal\u2011to\u2011noise ratio and frequent pauses will cause high word\u2011error rates for standard ASR models unless the audio is pre\u2011processed."
+  },
+  "mitigation_strategies": [
+    {
+      "issue_type": "low_volume",
+      "recommended_action": "Apply gain normalization (e.g., +12\u202fdB) and dynamic range compression to raise speech level without amplifying background noise.",
+      "priority": "high"
+    },
+    {
+      "issue_type": "excessive_silence",
+      "recommended_action": "Trim or auto\u2011remove silence segments >0.8\u202fs using a VAD\u2011based editor; optionally insert brief filler noise to preserve timing if needed for legal transcripts.",
+      "priority": "high"
+    },
+    {
+      "issue_type": "potential_noise_floor",
+      "recommended_action": "Run a spectral noise reduction (e.g., Wiener filter) after gain boost to suppress any underlying hiss or hum.",
+      "priority": "medium"
+    },
+    {
+      "issue_type": "single_channel_mono",
+      "recommended_action": "If possible, re\u2011record with a higher\u2011quality microphone and a higher bit rate (>96\u202fkbps) for future depositions.",
+      "priority": "low"
+    }
+  ]
+}
