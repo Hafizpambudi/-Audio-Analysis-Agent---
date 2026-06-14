@@ -1,6 +1,6 @@
 # Environment
 .env
-.env.*
+
 
 # Python
 __pycache__/
@@ -12,9 +12,6 @@ venv/
 .venv/
 .uv/
 
-# Audio samples (keep directory structure)
-Audio Samples/*
-!Audio Samples/.gitkeep
 
 # IDE
 .idea/

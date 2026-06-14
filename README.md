@@ -71,6 +71,7 @@ uv run python -m src.server
 ```bash
 uv run python -m src.agent "path/to/audio.mp3"
 uv run python -m src.agent "path/to/audio.mp3" --skip-llm  # Without LLM (for testing)
+uv run python -m src.agent "path/to/audio.mp3" --with-save # With Output Saved
 ```
 
 ## Output Format

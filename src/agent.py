@@ -308,14 +308,17 @@ def analyze_audio_file(file_path: str, skip_llms: bool = False) -> AudioAnalysis
 
 
 if __name__ == "__main__":
-    import sys
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Analyze audio file quality")
+    parser.add_argument("audio_file", help="Path to the audio file to analyze")
+    parser.add_argument("--skip-llm", action="store_true", help="Skip LLM synthesis phase")
+    parser.add_argument("--with-save", action="store_true", help="Save JSON analysis output to file")
     
-    if len(sys.argv) < 2:
-        print("Usage: python -m src.agent <audio_file> [--skip-llm]")
-        sys.exit(1)
+    args = parser.parse_args()
     
-    file_path = sys.argv[1]
-    skip_llm = "--skip-llm" in sys.argv
+    file_path = args.audio_file
+    skip_llm = args.skip_llm
     
     if skip_llm:
         logger.info("Running in skip-LLM mode (no OPENROUTER_API_KEY required)")
@@ -329,4 +332,17 @@ if __name__ == "__main__":
             summary="LLM synthesis was skipped"
         )
     
-    print(report.to_json())
+    json_output = report.to_json()
+    print(json_output)
+    
+    if args.with_save:
+        output_path = os.path.join(
+            os.path.dirname(file_path),
+            os.path.splitext(os.path.basename(file_path))[0] + "_analysis.json"
+        )
+        try:
+            with open(output_path, "w", encoding="utf-8") as f:
+                f.write(json_output)
+            logger.info(f"Analysis saved to: {output_path}")
+        except Exception as e:
+            logger.error(f"Failed to save analysis file: {e}")
