@@ -1,9 +1,11 @@
 import json
-from typing import List, Optional
-from pydantic import BaseModel, Field
+from typing import List, Literal, Optional
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class AudioMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    
     file_name: str
     duration_seconds: float
     sample_rate: int
@@ -12,6 +14,8 @@ class AudioMetadata(BaseModel):
 
 
 class AmplitudeStats(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    
     peak_level_db: Optional[float] = None
     flat_factor: float = 0.0
     rms_level_db: float
@@ -19,18 +23,25 @@ class AmplitudeStats(BaseModel):
 
 
 class SilenceSegment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    
     start_time: float
     end_time: float
     duration: float
 
 
 class ClippingSegment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    
     start_time: float
     end_time: float
     peak_dB: float
+    confidence: Literal["high", "potential"] = "potential"
 
 
 class AudioQualityMetrics(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    
     silence_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
     clipping_detected: bool
     clipping_segments: List[ClippingSegment] = Field(default_factory=list)
@@ -40,26 +51,36 @@ class AudioQualityMetrics(BaseModel):
 
 
 class ProcessingIssue(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    
     issue_type: str
     description: str
     start_time: Optional[float] = None
     end_time: Optional[float] = None
-    severity: str = Field(default="medium", pattern="^(low|medium|high|critical)$")
+    severity: Literal["low", "medium", "high", "critical"] = "medium"
 
 
 class MitigationStrategy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    
     issue_type: str
     recommended_action: str
-    priority: str = Field(pattern="^(low|medium|high|critical)$")
+    priority: Literal["immediate", "before_transcription", "optional"]
 
 
 class ExecutiveSummary(BaseModel):
-    overall_quality: str
-    asr_viability: str
+    model_config = ConfigDict(extra="forbid")
+    
+    overall_quality: Literal["excellent", "good", "acceptable", "poor", "unusable"]
+    asr_viability: Literal["high", "medium", "low", "not_viable"]
+    transcription_viable: bool
     summary: str
+    blocking_issues: List[str] = Field(default_factory=list)
 
 
 class AudioAnalysisReport(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    
     file_name: str
     duration_seconds: float
     metadata: AudioMetadata

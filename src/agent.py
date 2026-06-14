@@ -1,22 +1,44 @@
 import json
 import os
 import logging
-from typing import List
+import re as _re
+from typing import List, Literal, Optional, TypedDict
 from dotenv import load_dotenv
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
+from pydantic import ValidationError
 from .schema import (
     AudioAnalysisReport, AudioMetadata, AmplitudeStats,
-    AudioQualityMetrics, SilenceSegment, ProcessingIssue, MitigationStrategy, ExecutiveSummary
+    AudioQualityMetrics, SilenceSegment, ClippingSegment, ProcessingIssue, MitigationStrategy, ExecutiveSummary
 )
 from .server import inspect_metadata, analyze_amplitude_stats, detect_silence, detect_clipping
 
-# Load .env file
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+
+_llm: Optional[ChatOpenAI] = None
+
+def _get_llm() -> ChatOpenAI:
+    global _llm
+    if _llm is None:
+        _llm = create_llm_client()
+    return _llm
+
+
+class AudioAgentState(TypedDict, total=False):
+    file_path: str
+    current_phase: str
+    metadata: dict
+    amplitude_stats: dict
+    silence_segments: List[dict]
+    clipping_segments: List[dict]
+    silence_ratio: float
+    report: Optional[AudioAnalysisReport]
+    error: Optional[str]
 
 
 def create_llm_client():
@@ -35,7 +57,7 @@ def create_llm_client():
     )
 
 
-def phase_a_signal_diagnostics(state: dict) -> dict:
+def phase_a_signal_diagnostics(state: AudioAgentState) -> AudioAgentState:
     logger.info("Phase A: Starting signal diagnostics")
     
     file_path = state.get("file_path")
@@ -67,7 +89,7 @@ def phase_a_signal_diagnostics(state: dict) -> dict:
     }
 
 
-def phase_b_heuristic_processing(state: dict) -> dict:
+def phase_b_heuristic_processing(state: AudioAgentState) -> AudioAgentState:
     logger.info(f"Phase B: Starting heuristic processing - phase: {state.get('current_phase', 'unknown')}")
     
     if "error" in state:
@@ -106,7 +128,7 @@ def phase_b_heuristic_processing(state: dict) -> dict:
     }
 
 
-def phase_c_structured_compilation(state: dict) -> dict:
+def phase_c_structured_compilation(state: AudioAgentState) -> AudioAgentState:
     logger.info("Phase C: Starting structured compilation")
     
     if "error" in state:
@@ -115,14 +137,24 @@ def phase_c_structured_compilation(state: dict) -> dict:
     issues: List[ProcessingIssue] = []
     
     amplitude_stats = state.get("amplitude_stats", {})
-    dc_offset = amplitude_stats.get("dc_offset_db", 0)
-    if abs(dc_offset) > 1.0:
+    rms_level = amplitude_stats.get("rms_level_db", -20)
+    
+    if rms_level < -30.0:
+        issues.append(ProcessingIssue(
+            issue_type="low_volume",
+            description=f"Low volume detected: RMS level at {rms_level:.1f}dB. Recommend checking input gain levels.",
+            severity="medium"
+        ))
+        logger.info(f"Phase C: Low volume issue detected ({rms_level:.1f}dB)")
+    
+    dc_offset_db = amplitude_stats.get("dc_offset_db", 0)
+    if dc_offset_db > -40.0:
         issues.append(ProcessingIssue(
             issue_type="dc_offset",
-            description=f"DC offset detected: {dc_offset:.2f}dB. Recommend high-pass filter preprocessing.",
+            description=f"DC offset detected: {dc_offset_db:.1f}dB. Apply high-pass filter.",
             severity="high"
         ))
-        logger.info(f"Phase C: DC offset issue detected ({dc_offset:.2f}dB)")
+        logger.info(f"Phase C: DC offset issue detected ({dc_offset_db:.2f}dB)")
     
     for seg in state.get("silence_segments", []):
         if seg.get("duration", 0) > 5.0:
@@ -135,18 +167,19 @@ def phase_c_structured_compilation(state: dict) -> dict:
             ))
     
     for seg in state.get("clipping_segments", []):
-        issues.append(ProcessingIssue(
-            issue_type="clipping",
-            description=f"Clipping detected. Recommend de-clipping or gain-attenuation preprocessing.",
-            severity="high"
-        ))
+        if not state.get("skip_deep"):
+            issues.append(ProcessingIssue(
+                issue_type="clipping",
+                description=f"Clipping detected. Recommend de-clipping or gain-attenuation preprocessing.",
+                severity="high"
+            ))
     
     quality_metrics = AudioQualityMetrics(
         silence_ratio=state.get("silence_ratio", 0),
         clipping_detected=len(state.get("clipping_segments", [])) > 0,
-        clipping_segments=state.get("clipping_segments", []),
+        clipping_segments=[ClippingSegment(**seg) for seg in state.get("clipping_segments", [])],
         avg_volume_db=amplitude_stats.get("rms_level_db", -20),
-        dc_offset_db=dc_offset
+        dc_offset_db=dc_offset_db
     )
     
     metadata = state.get("metadata", {})
@@ -169,63 +202,168 @@ def phase_c_structured_compilation(state: dict) -> dict:
     }
 
 
-def phase_d_llm_synthesis(state: dict) -> dict:
+def phase_c_lightweight_compilation(state: AudioAgentState) -> AudioAgentState:
+    """For clean audio: compile report without deep issue analysis. Skip to LLM fast-path."""
+    return phase_c_structured_compilation({**state, "skip_deep": True})
+
+
+def phase_critical_report(state: AudioAgentState) -> AudioAgentState:
+    logger.info("Phase C: Critical quality report")
+    
+    sr = state.get("metadata", {}).get("sample_rate", 0)
+    report = AudioAnalysisReport(
+        file_name=state.get("metadata", {}).get("file_name", "unknown"),
+        duration_seconds=state.get("metadata", {}).get("duration_seconds", 0),
+        metadata=AudioMetadata(**state.get("metadata", {
+            "file_name": "unknown",
+            "duration_seconds": 0,
+            "sample_rate": 0,
+            "bit_rate": None,
+            "channels": 1
+        })),
+        amplitude_stats=AmplitudeStats(
+            peak_level_db=None,
+            flat_factor=0.0,
+            rms_level_db=-20.0,
+            dc_offset_db=0.0
+        ),
+        audio_quality=AudioQualityMetrics(
+            silence_ratio=0,
+            clipping_detected=False,
+            avg_volume_db=-99,
+            dc_offset_db=0
+        ),
+        issues=[ProcessingIssue(
+            issue_type="critical_sample_rate",
+            description=f"Sample rate {sr}Hz is below 8kHz minimum. File is not viable for ASR.",
+            severity="critical"
+        )],
+        executive_summary=ExecutiveSummary(
+            overall_quality="unusable",
+            asr_viability="not_viable",
+            transcription_viable=False,
+            summary=f"Sample rate {sr}Hz destroys speech frequencies. Do not transcribe.",
+            blocking_issues=[f"Sample rate {sr}Hz < 8kHz minimum"]
+        )
+    )
+    return {**state, "report": report}
+
+
+def phase_error_handler(state: AudioAgentState) -> AudioAgentState:
+    logger.error(f"Error handler reached: {state.get('error')}")
+    return state
+
+
+SYSTEM_PROMPT = """You are a forensic audio quality analyst for legal transcription systems.
+
+REFERENCE STANDARDS:
+- EBU R128: target -23 LUFS integrated loudness for speech (ITU-R BS.1770)
+- ASR minimum sample rate: 16kHz (wav2vec2, Whisper, Conformer training spec)
+- Absolute floor sample rate: 8kHz (ITU-T G.711 telephone — high WER expected)
+- Clipping: any true peak ≥ -1.0 dBFS with flat_factor > 0.1 indicates saturation distortion
+
+INSTRUCTIONS:
+- Apply the above standards when assigning quality grades
+- For silence ratio: reason about it in context of deposition length, do not apply a fixed threshold
+- For DC offset: flag if linear ratio > 0.01 (>1%), recommend high-pass filter
+- Justify your overall_quality grade with specific reference to the signal facts provided
+
+OUTPUT RULES:
+- overall_quality  : exactly one of [excellent, good, acceptable, poor, unusable]
+- asr_viability    : exactly one of [high, medium, low, not_viable]
+- transcription_viable: true only if overall_quality is excellent/good/acceptable
+- priority in mitigation_strategies: exactly one of [immediate, before_transcription, optional]
+- blocking_issues  : list issues that PREVENT transcription if not fixed (empty list if none)
+
+Return ONLY valid JSON. No markdown fences. No explanation outside the JSON object."""
+
+
+def _extract_json(text: str) -> dict:
+    cleaned = _re.sub(r"```(?:json)?\s*|\s*```", "", text).strip()
+    return json.loads(cleaned)
+
+
+def build_user_prompt(report_dict: dict) -> str:
+    metadata = report_dict.get("metadata", {})
+    quality = report_dict.get("audio_quality", {})
+    issues = report_dict.get("issues", [])
+    
+    return f"""Analyze this court deposition audio report and return structured JSON.
+
+SIGNAL FACTS:
+- Duration       : {report_dict.get('duration_seconds', 0):.1f}s
+- Sample Rate    : {metadata.get('sample_rate', 0)} Hz
+- Channels       : {metadata.get('channels', 1)}
+- Bit Rate       : {metadata.get('bit_rate', 'unknown')} bps
+- Peak Level     : {report_dict.get('amplitude_stats', {}).get('peak_level_db', 'N/A')} dBFS
+- RMS Level      : {report_dict.get('amplitude_stats', {}).get('rms_level_db', 'N/A')} dB
+- DC Offset      : {report_dict.get('amplitude_stats', {}).get('dc_offset_db', 'N/A')} dB
+- Silence Ratio  : {quality.get('silence_ratio', 0):.1%}
+- Clipping       : {quality.get('clipping_detected', False)}
+- Issues Found   : {len(issues)}
+
+DETECTED ISSUES:
+{json.dumps(issues, indent=2) if issues else "None"}
+
+Respond with this exact JSON shape:
+{{
+  "executive_summary": {{
+    "overall_quality": "<one of: excellent|good|acceptable|poor|unusable>",
+    "asr_viability": "<one of: high|medium|low|not_viable>",
+    "transcription_viable": <true|false>,
+    "summary": "<2-3 sentences. Be specific about what will hurt transcription accuracy.>",
+    "blocking_issues": ["<issue>", ...]
+  }},
+  "mitigation_strategies": [
+    {{
+      "issue_type": "<type>",
+      "recommended_action": "<concrete ffmpeg command or tool recommendation>",
+      "priority": "<one of: immediate|before_transcription|optional>"
+    }}
+  ]
+}}"""
+
+
+def phase_d_llm_synthesis(state: AudioAgentState) -> AudioAgentState:
     logger.info("Phase D: Starting LLM synthesis")
     
     if "error" in state:
         return state
     
-    llm = create_llm_client()
+    llm = _get_llm()
     
     report_dict = state.get("report", {}).model_dump() if state.get("report") else {}
     
-    system_prompt = """You are an audio quality analyst for court deposition recordings.
-    Analyze the structured audio analysis data and provide:
-    1. An executive summary assessing overall quality and ASR viability
-    2. A mitigation strategy matrix with actionable recommendations
-    
-    Be concise but thorough. Focus on practical advice for improving speech recognition quality.
-    Output in JSON format with 'executive_summary' and 'mitigation_strategies' keys."""
-    
-    user_prompt = f"""Analyze this audio analysis report:
-    {json.dumps(report_dict, indent=2)}
-    
-    Return only JSON with:
-    - executive_summary: {{overall_quality, asr_viability, summary}}
-    - mitigation_strategies: [{{issue_type, recommended_action, priority}}]"""
-    
     messages = [
-        SystemMessage(content=system_prompt),
-        HumanMessage(content=user_prompt)
+        SystemMessage(content=SYSTEM_PROMPT),
+        HumanMessage(content=build_user_prompt(report_dict))
     ]
     
-    response = llm.invoke(messages)
+    MAX_RETRIES = 2
     
-    try:
-        synthesis = json.loads(response.content)
-        
-        exec_summary = ExecutiveSummary(
-            overall_quality=synthesis["executive_summary"]["overall_quality"],
-            asr_viability=synthesis["executive_summary"]["asr_viability"],
-            summary=synthesis["executive_summary"]["summary"]
-        )
-        
-        mitigations = [
-            MitigationStrategy(**m) for m in synthesis.get("mitigation_strategies", [])
-        ]
-        
-        if state.get("report"):
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            response = llm.invoke(messages)
+            synthesis = _extract_json(response.content)
+            
+            exec_summary = ExecutiveSummary(**synthesis["executive_summary"])
+            mitigations = [MitigationStrategy(**m) for m in synthesis.get("mitigation_strategies", [])]
+            
             state["report"].executive_summary = exec_summary
             state["report"].mitigation_strategies = mitigations
-            logger.info("Phase D: LLM synthesis completed successfully")
-    except (json.JSONDecodeError, KeyError, TypeError) as e:
-        logger.error(f"Phase D: LLM response parsing failed: {e}")
-        if state.get("report"):
-            state["report"].executive_summary = ExecutiveSummary(
-                overall_quality="unknown",
-                asr_viability="requires_manual_review",
-                summary=f"Automatic analysis failed: {str(e)}"
-            )
+            logger.info(f"Phase D: LLM synthesis OK (attempt {attempt + 1})")
+            break
+        
+        except (json.JSONDecodeError, KeyError, ValidationError) as e:
+            logger.warning(f"Phase D: LLM parse failed attempt {attempt + 1}: {e}")
+            if attempt == MAX_RETRIES:
+                state["report"].executive_summary = ExecutiveSummary(
+                    overall_quality="acceptable",
+                    asr_viability="medium",
+                    transcription_viable=True,
+                    summary="Automated LLM synthesis failed. Manual review recommended.",
+                    blocking_issues=[]
+                )
     
     return {
         **state,
@@ -233,25 +371,72 @@ def phase_d_llm_synthesis(state: dict) -> dict:
     }
 
 
+def route_after_diagnostics(state: AudioAgentState) -> str:
+    if state.get("error"):
+        return "error_handler"
+    metadata = state.get("metadata", {})
+    if metadata.get("duration_seconds", 0) == 0:
+        return "error_handler"
+    if metadata.get("sample_rate", 0) < 8000:
+        return "critical_quality_report"
+    return "heuristic_processing"
+
+
+def route_after_heuristics(state: AudioAgentState) -> str:
+    has_clipping = len(state.get("clipping_segments", [])) > 0
+    silence_ratio = state.get("silence_ratio", 0.0)
+    amplitude = state.get("amplitude_stats", {})
+    peak_db = amplitude.get("peak_level_db") or -99.0
+    
+    if has_clipping or silence_ratio > 0.40 or peak_db > -1.0:
+        return "structured_compilation"
+    
+    return "lightweight_compilation"
+
+
 def create_agent_graph():
-    graph = StateGraph(dict)
+    graph = StateGraph(AudioAgentState)
     
     graph.add_node("signal_diagnostics", phase_a_signal_diagnostics)
     graph.add_node("heuristic_processing", phase_b_heuristic_processing)
     graph.add_node("structured_compilation", phase_c_structured_compilation)
+    graph.add_node("lightweight_compilation", phase_c_lightweight_compilation)
+    graph.add_node("critical_quality_report", phase_critical_report)
     graph.add_node("llm_synthesis", phase_d_llm_synthesis)
+    graph.add_node("error_handler", phase_error_handler)
     
     graph.set_entry_point("signal_diagnostics")
-    graph.add_edge("signal_diagnostics", "heuristic_processing")
-    graph.add_edge("heuristic_processing", "structured_compilation")
+    
+    graph.add_conditional_edges(
+        "signal_diagnostics",
+        route_after_diagnostics,
+        {
+            "heuristic_processing": "heuristic_processing",
+            "critical_quality_report": "critical_quality_report",
+            "error_handler": "error_handler",
+        }
+    )
+    
+    graph.add_conditional_edges(
+        "heuristic_processing",
+        route_after_heuristics,
+        {
+            "structured_compilation": "structured_compilation",
+            "lightweight_compilation": "lightweight_compilation",
+        }
+    )
+    
     graph.add_edge("structured_compilation", "llm_synthesis")
+    graph.add_edge("lightweight_compilation", "llm_synthesis")
+    graph.add_edge("critical_quality_report", END)
     graph.add_edge("llm_synthesis", END)
+    graph.add_edge("error_handler", END)
     
     return graph.compile()
 
 
 def create_basic_agent_graph():
-    graph = StateGraph(dict)
+    graph = StateGraph(AudioAgentState)
     
     graph.add_node("signal_diagnostics", phase_a_signal_diagnostics)
     graph.add_node("heuristic_processing", phase_b_heuristic_processing)
@@ -266,7 +451,7 @@ def create_basic_agent_graph():
 
 
 def analyze_audio_file(file_path: str, skip_llms: bool = False) -> AudioAnalysisReport:
-    initial_state = {"file_path": file_path, "current_phase": "Starting"}
+    initial_state: AudioAgentState = {"file_path": file_path, "current_phase": "Starting"}
     
     logger.info(f"Starting audio analysis for: {file_path}")
     
@@ -279,7 +464,6 @@ def analyze_audio_file(file_path: str, skip_llms: bool = False) -> AudioAnalysis
     
     report = result.get("report")
     if not report:
-        # Create a basic report if something went wrong
         report = AudioAnalysisReport(
             file_name=file_path.split("/")[-1] if file_path else "unknown",
             duration_seconds=0,
@@ -327,9 +511,11 @@ if __name__ == "__main__":
     
     if skip_llm:
         report.executive_summary = ExecutiveSummary(
-            overall_quality="not_analyzed",
-            asr_viability="requires_llm",
-            summary="LLM synthesis was skipped"
+            overall_quality="acceptable",
+            asr_viability="medium",
+            transcription_viable=False,
+            summary="LLM synthesis was skipped. Manual review recommended.",
+            blocking_issues=["LLM synthesis was skipped - manual review recommended"]
         )
     
     json_output = report.to_json()

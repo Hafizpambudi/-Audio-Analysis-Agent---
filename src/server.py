@@ -3,6 +3,7 @@ import json
 import re
 import os
 import shutil
+import math
 from pathlib import Path
 from typing import List, Optional
 from fastmcp import FastMCP
@@ -34,13 +35,19 @@ def get_ffmpeg_bin() -> tuple:
             return (str(ffmpeg_exe), str(ffprobe_exe) if ffprobe_exe.exists() else None)
     
     return ("ffmpeg", "ffprobe")
-    
-    return ("ffmpeg", "ffprobe")
 
 
 def check_ffmpeg_available() -> bool:
     ffmpeg_cmd, ffprobe_cmd = get_ffmpeg_bin()
     return shutil.which(ffmpeg_cmd) is not None if ffmpeg_cmd else False
+
+
+def _parse_db(pattern: str, text: str) -> Optional[float]:
+    m = re.search(pattern, text)
+    if not m:
+        return None
+    val = m.group(1).strip()
+    return float("-inf") if val == "-inf" else float("inf") if val == "inf" else float(val)
 
 
 def run_ffmpeg_command(args: List[str]) -> str:
@@ -155,17 +162,18 @@ def analyze_amplitude_stats(file_path: str) -> dict:
     
     output = run_ffmpeg_command(args)
     
-    # ffmpeg astats output format uses spaces, not underscores
-    peak_match = re.search(r"Peak level dB: ([\-]?[0-9.]+)", output)
-    flat_match = re.search(r"Flat factor: ([0-9.]+)", output)
-    rms_match = re.search(r"RMS level dB: ([\-]?[0-9.]+)", output)
-    dc_match = re.search(r"DC offset: ([\-]?[0-9.]+)", output)
+    peak_db = _parse_db(r"Peak level dB:\s*([-\d.inf]+)", output)
+    flat_factor = _parse_db(r"Flat factor:\s*([-\d.inf]+)", output)
+    rms_db = _parse_db(r"RMS level dB:\s*([-\d.inf]+)", output)
+    dc_linear = _parse_db(r"DC offset:\s*([-\d.inf]+)", output) or 0.0
+    
+    dc_offset_db = 20 * math.log10(abs(dc_linear) + 1e-9)
     
     return {
-        "peak_level_db": float(peak_match.group(1)) if peak_match else None,
-        "flat_factor": float(flat_match.group(1)) if flat_match else 0.0,
-        "rms_level_db": float(rms_match.group(1)) if rms_match else -20.0,
-        "dc_offset_db": float(dc_match.group(1)) if dc_match else 0.0
+        "peak_level_db": peak_db,
+        "flat_factor": flat_factor or 0.0,
+        "rms_level_db": rms_db or -20.0,
+        "dc_offset_db": round(dc_offset_db, 2)
     }
 
 
@@ -187,18 +195,13 @@ def detect_clipping(file_path: str, threshold_db: float = 0.1) -> List[dict]:
     
     output = run_ffmpeg_command(args)
     
-    # Peak near 0dBFS indicates potential clipping
-    peak_match = re.search(r"Peak level dB: ([\-]?[0-9.]+)", output)
-    flat_match = re.search(r"Flat factor: ([0-9.]+)", output)
+    peak_db = _parse_db(r"Peak level dB:\s*([-\d.inf]+)", output)
+    flat_factor = _parse_db(r"Flat factor:\s*([-\d.inf]+)", output)
     
     segments = []
-    if peak_match:
-        peak_db = float(peak_match.group(1))
-        # Check if peak is near 0dB (within threshold)
+    if peak_db is not None:
         if abs(peak_db) <= threshold_db:
-            flat_factor = float(flat_match.group(1)) if flat_match else 0.0
-            # Only flag as clipping if flat_factor indicates samples at ceiling
-            if flat_factor > 0:
+            if flat_factor is not None and flat_factor > 0:
                 segments.append({
                     "start_time": 0.0,
                     "end_time": 0.0,
