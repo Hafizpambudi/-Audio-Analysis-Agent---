@@ -7,16 +7,48 @@ Audio analysis system using ffmpeg/ffprobe + LLM agent for court deposition reco
 ```
 ┌──────────────────────┐         ┌──────────────────────┐
 │       LLM Agent      │◄────────┤ FastMCP Server       │
-│                      │  JSON   │ (server.py)          │
-└──────────────────────┘         └───────────┬──────────┘
-                                            │
-                         Subprocess calls    │
-                                            ▼
-                               ┌─────────────────────┐
-                               │  ffmpeg / ffprobe   │
-                               │  (Audio Analysis)   │
-                               └─────────────────────┘
+│   (LangGraph)        │  JSON   │ (server.py)          │
+└───────────┬──────────┘         └───────────┬──────────┘
+            │                                  │
+            │    Phase A → B → C → D1 → D2       │
+            │    (LLM only in D1/D2)            │
+            ▼                                  ▼
+┌─────────────────────┐              ┌─────────────────────┐
+│ ffmpeg / ffprobe    │◄────────────│ Tool calls (MCP)    │
+│ (Subprocess)        │              │                     │
+└─────────────────────┘              └─────────────────────┘
 ```
+
+### Why Multi-Step LLM?
+
+**Two-phase design (not one, not three):** Step 1 classifies recording context from metadata only — cheap, small input (~100 tokens). Step 2 synthesizes quality assessment grounded in Step 1 output. The classification step is separated because ASR thresholds vary dramatically by environment: phone recordings (8kHz) use different standards than in-person depositions (44.1kHz). Merging analysis into Step 2 keeps costs low while enabling context-aware quality judgments.
+
+### Processing Flow
+
+```
+signal_diagnostics
+    │
+    ├── error ──→ error_handler → END
+    │
+    └── sample_rate < 8kHz ──→ critical_quality_report → END
+                        (bypasses LLM - unusable by definition)
+                         
+    └── normal ──→ heuristic_processing
+                  │
+                  ├── clean audio ──→ lightweight_compilation
+                  │                              ↓
+                  └── issues ──→ structured_compilation
+                                      ↓
+                               classify_context (D1)
+                                      ↓
+                                 synthesize (D2) → END
+```
+
+- **Phase A**: Signal diagnostics (ffprobe metadata + amplitude stats)
+- **Phase B**: Heuristic processing (silence/clipping detection)
+- **Phase C**: Structured JSON compilation (Pydantic models, issue detection)
+- **Phase D1**: LLM classifies recording context from metadata only
+- **Phase D2**: LLM synthesizes quality assessment using context-aware thresholds
 
 ## Tech Stack
 - Python 3.10+ with UV package manager
@@ -99,6 +131,12 @@ uv run python -m src.agent "path/to/audio.mp3" --with-save # With Output Saved
       "severity": "high"
     }
   ],
+  "recording_context": {
+    "environment": "in_person",
+    "expected_noise_profile": "clean",
+    "recording_era": "modern",
+    "context_notes": "44.1kHz stereo with high bitrate suggests professional setup"
+  },
   "executive_summary": {
     "overall_quality": "good",
     "asr_viability": "high",
@@ -118,19 +156,41 @@ uv run python -m src.agent "path/to/audio.mp3" --with-save # With Output Saved
 
 ## Agent Processing Phases
 
-1. **Phase A**: Signal diagnostics (metadata extraction, amplitude analysis)
-   - Conditional routing: Invalid file → error_handler, Low sample rate (<8kHz) → critical_quality_report
-2. **Phase B**: Heuristic processing (clipping detection, silence detection)
-   - Conditional routing: Clean audio → lightweight_compilation, Issues detected → structured_compilation
-3. **Phase C**: Structured JSON compilation (Pydantic validation, issue detection)
-4. **Phase D**: LLM synthesis (executive summary + mitigation matrix)
+1. **Phase A**: Signal diagnostics (ffprobe metadata, amplitude analysis)
+   - Route: Invalid file → error_handler
+   - Route: Sample rate < 8kHz → critical_quality_report (unusable, LLM bypassed)
 
-### Quality Thresholds
-- Sample rate < 8kHz → immediate "unusable" rating (critical quality path)
+2. **Phase B**: Heuristic processing (clipping detection, silence detection)
+   - Route: Clean audio → lightweight_compilation
+   - Route: Issues detected → structured_compilation
+
+3. **Phase C**: Structured JSON compilation (Pydantic validation, issue detection)
+
+4. **Phase D1**: LLM classifies recording context (phone/in_person/conference_room)
+   - Input: Metadata only (duration, sample_rate, channels, bit_rate)
+   - Output: RecordingContext model for threshold calibration
+   - Failure: Falls back to "unknown" context, continues to D2
+
+5. **Phase D2**: LLM synthesizes quality assessment with context-aware thresholds
+   - Uses RecordingContext to calibrate ASR viability standards
+   - Phone (8kHz) → relaxed thresholds vs In-person (44kHz) → strictest standards
+
+### Context-Aware Thresholds
+
+| Environment | Sample Rate Expectation | Noise Tolerance | Notes |
+|-------------|------------------------|-----------------|-------|
+| phone | >= 8kHz acceptable | Relaxed RMS | G.711 telephone spec |
+| in_person | >= 16kHz required | Strictest bar | Studio quality expected |
+| conference_room | >= 16kHz | Moderate noise OK | Room tone expected |
+| unknown | >= 16kHz required | Strictest bar | Fallback - assume worst |
+
+### Quality Standards
+
+- Sample rate < 8kHz → immediate "unusable" rating (critical path, no LLM)
 - Silence ratio > 40% → downgrades quality one level
-- Clipping detected → automatic "poor" minimum rating
+- Clipping + flat_factor > 0.1 → automatic "poor" minimum
 - RMS level < -30dB → low volume issue flagged
-- DC offset > -40dB → preprocessing required
+- DC offset > -40dB → preprocessing required (high-pass filter)
 
 ## Available Tools
 
