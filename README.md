@@ -6,7 +6,7 @@ Audio analysis system using ffmpeg/ffprobe + LLM agent for court deposition reco
 
 ```
 ┌──────────────────────┐         ┌──────────────────────┐
-│  LLM Agent (Cursor)  │◄────────┤ FastMCP Server       │
+│       LLM Agent      │◄────────┤ FastMCP Server       │
 │                      │  JSON   │ (server.py)          │
 └──────────────────────┘         └───────────┬──────────┘
                                             │

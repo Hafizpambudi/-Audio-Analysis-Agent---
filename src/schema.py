@@ -3,6 +3,15 @@ from typing import List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class RecordingContext(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    environment: Literal["phone", "in_person", "conference_room", "unknown"]
+    expected_noise_profile: Literal["clean", "moderate", "noisy", "unknown"]
+    recording_era: Literal["modern", "legacy", "unknown"]
+    context_notes: str
+
+
 class AudioMetadata(BaseModel):
     model_config = ConfigDict(extra="forbid")
     
@@ -90,6 +99,7 @@ class AudioAnalysisReport(BaseModel):
     issues: List[ProcessingIssue] = Field(default_factory=list)
     executive_summary: Optional[ExecutiveSummary] = None
     mitigation_strategies: List[MitigationStrategy] = Field(default_factory=list)
+    recording_context: Optional[RecordingContext] = None
 
     def to_json(self) -> str:
         return json.dumps(self.model_dump(), indent=2, default=str)

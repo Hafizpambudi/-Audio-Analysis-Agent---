@@ -12,7 +12,7 @@
     "peak_level_db": -0.392138,
     "flat_factor": 0.0,
     "rms_level_db": -16.605717,
-    "dc_offset_db": -2.1e-05
+    "dc_offset_db": -93.56
   },
   "silence_segments": [
     {
@@ -107,7 +107,7 @@
     "clipping_segments": [],
     "avg_volume_db": -16.605717,
     "noise_floor_db": null,
-    "dc_offset_db": -2.1e-05
+    "dc_offset_db": -93.56
   },
   "issues": [
     {
@@ -119,30 +119,23 @@
     }
   ],
   "executive_summary": {
-    "overall_quality": "moderate",
-    "asr_viability": "low to medium",
-    "summary": "The recording is 2\u202fmin long, mono at 16\u202fkHz with a low average RMS level of -16.6\u202fdB and no clipping. About 22\u202f% of the file consists of silence, including a 6.4\u2011second gap that interrupts the testimony. The low signal\u2011to\u2011noise ratio and frequent pauses will cause high word\u2011error rates for standard ASR models unless the audio is pre\u2011processed."
+    "overall_quality": "good",
+    "asr_viability": "high",
+    "transcription_viable": true,
+    "summary": "The 16\u202fkHz mono legacy phone recording meets the minimum ASR floor with adequate loudness and no clipping. The only notable issue is a medium\u2011severity long silence, which does not prevent transcription but should be trimmed for optimal ASR performance.",
+    "blocking_issues": []
   },
   "mitigation_strategies": [
     {
-      "issue_type": "low_volume",
-      "recommended_action": "Apply gain normalization (e.g., +12\u202fdB) and dynamic range compression to raise speech level without amplifying background noise.",
-      "priority": "high"
-    },
-    {
-      "issue_type": "excessive_silence",
-      "recommended_action": "Trim or auto\u2011remove silence segments >0.8\u202fs using a VAD\u2011based editor; optionally insert brief filler noise to preserve timing if needed for legal transcripts.",
-      "priority": "high"
-    },
-    {
-      "issue_type": "potential_noise_floor",
-      "recommended_action": "Run a spectral noise reduction (e.g., Wiener filter) after gain boost to suppress any underlying hiss or hum.",
-      "priority": "medium"
-    },
-    {
-      "issue_type": "single_channel_mono",
-      "recommended_action": "If possible, re\u2011record with a higher\u2011quality microphone and a higher bit rate (>96\u202fkbps) for future depositions.",
-      "priority": "low"
+      "issue_type": "long_silence",
+      "recommended_action": "ffmpeg -i input.wav -af \"silenceremove=start_periods=1:start_duration=5:start_threshold=-35dB\" -c:a pcm_s16le output_trimmed.wav",
+      "priority": "before_transcription"
     }
-  ]
+  ],
+  "recording_context": {
+    "environment": "phone",
+    "expected_noise_profile": "unknown",
+    "recording_era": "legacy",
+    "context_notes": "16kHz mono with low bitrate suggests a legacy phone deposition recording."
+  }
 }
