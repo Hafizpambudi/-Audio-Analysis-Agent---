@@ -61,21 +61,15 @@ signal_diagnostics
 
 ### 1. System Dependencies
 ```bash
-# macOS
-brew install ffmpeg
+# ffmpeg/ffprobe binaries are included in repo (ffmpegBase/bin/)
+# Windows: No installation needed - binaries auto-detected
+# Linux/macOS: Uses system ffmpeg, or set FFMPEG_PATH to custom location
 
-# Ubuntu/Debian
-sudo apt install ffmpeg
+# Linux/macOS (optional):
+# sudo apt install ffmpeg  # If system ffmpeg not available
 
-# Windows - Choose one option:
-
-# Option A: Download static binaries (recommended for project-local)
-# 1. Download: https://github.com/FFmpeg/FFmpeg/releases/latest
-# 2. Extract ffmpeg.exe and ffprobe.exe to ./ffmpeg/
-# 3. Add to .env: FFMPEG_PATH=./ffmpeg/
-
-# Option B: Manual installation
-# Download from https://www.gyan.dev/ffmpeg/builds/ and add to PATH
+# Windows (manual override - only if needed):
+# FFMPEG_PATH=./ffmpegBase/bin  # Add to .env if auto-detection fails
 ```
 
 ### 2. Python Environment
@@ -89,7 +83,9 @@ uv sync
 
 ### 3. Environment Variables
 ```bash
-export OPENROUTER_API_KEY="your-api-key-here"
+# Copy .env.example and configure
+cp .env.example .env
+# Edit .env to add your OpenRouter API key
 ```
 
 ## Usage

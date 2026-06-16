@@ -18,21 +18,25 @@ mcp = FastMCP("audio-analysis")
 def get_ffmpeg_bin() -> tuple:
     """Get path to ffmpeg and ffprobe binaries.
     Returns tuple of (ffmpeg_path, ffprobe_path).
-    Checks FFMPEG_PATH env var first, then falls back to system PATH.
+    Checks FFMPEG_PATH env var first, then ffmpegBase directory, then falls back to system PATH.
     """
     custom_path = os.environ.get("FFMPEG_PATH")
     if custom_path:
-        # Clean up path - remove quotes and handle Windows path escaping
         custom_path = custom_path.strip().strip('"\'')
-        # Handle case where \f, \b etc were interpreted as escape sequences
-        # Check if path looks corrupted (has weird chars) and try to fix
         if '\x0c' in custom_path or '\x08' in custom_path:
-            # Re-encode to get original backslashes back
             custom_path = custom_path.encode('utf-8').decode('unicode_escape')
         ffmpeg_exe = Path(custom_path) / ("ffmpeg.exe" if os.name == "nt" else "ffmpeg")
         ffprobe_exe = Path(custom_path) / ("ffprobe.exe" if os.name == "nt" else "ffprobe")
         if ffmpeg_exe.exists():
             return (str(ffmpeg_exe), str(ffprobe_exe) if ffprobe_exe.exists() else None)
+    
+    # Check for bundled ffmpegBase directory
+    if os.name == "nt":
+        base_dir = Path(__file__).parent.parent / "ffmpegBase" / "bin"
+        ffmpeg_exe = base_dir / "ffmpeg.exe"
+        ffprobe_exe = base_dir / "ffprobe.exe"
+        if ffmpeg_exe.exists() and ffprobe_exe.exists():
+            return (str(ffmpeg_exe), str(ffprobe_exe))
     
     return ("ffmpeg", "ffprobe")
 
